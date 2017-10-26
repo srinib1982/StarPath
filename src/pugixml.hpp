@@ -250,8 +250,6 @@ namespace pugi
 
 	class xml_node;
 
-	class xml_text;
-
 	#ifndef PUGIXML_NO_XPATH
 	class xpath_node;
 	class xpath_node_set;
@@ -527,8 +525,7 @@ namespace pugi
 		size_t hash_value() const;
 
 		// Get internal pointer
-		xml_attribute_struct* internal_object() const;
-		xml_attribute_struct_ref internal_object_lol() const;
+		xml_attribute_struct_ref internal_object() const;
 	};
 
 #ifdef __BORLANDC__
@@ -600,9 +597,6 @@ namespace pugi
 
 		// Get root of DOM tree this node belongs to
 		xml_node root() const;
-
-		// Get text object for the current node
-		xml_text text() const;
 
 		// Get child, attribute or next/previous sibling with the specified name
 		xml_node child(const char_t* name) const;
@@ -783,103 +777,13 @@ namespace pugi
 		size_t hash_value() const;
 
 		// Get internal pointer
-		xml_node_struct* internal_object() const;
-		xml_node_struct_ref internal_object_lol() const;
+		xml_node_struct_ref internal_object() const;
 	};
 
 #ifdef __BORLANDC__
 	// Borland C++ workaround
 	bool PUGIXML_FUNCTION operator&&(const xml_node& lhs, bool rhs);
 	bool PUGIXML_FUNCTION operator||(const xml_node& lhs, bool rhs);
-#endif
-
-	// A helper for working with text inside PCDATA nodes
-	class PUGIXML_CLASS xml_text
-	{
-		friend class xml_node;
-
-		xml_node_struct* _root;
-
-		typedef void (*unspecified_bool_type)(xml_text***);
-
-		explicit xml_text(xml_node_struct* root);
-
-		xml_node_struct* _data_new();
-		xml_node_struct* _data() const;
-
-	public:
-		// Default constructor. Constructs an empty object.
-		xml_text();
-
-		// Safe bool conversion operator
-		operator unspecified_bool_type() const;
-
-		// Borland C++ workaround
-		bool operator!() const;
-
-		// Check if text object is empty
-		bool empty() const;
-
-		// Get text, or "" if object is empty
-		const char_t* get() const;
-
-		// Get text, or the default value if object is empty
-		const char_t* as_string(const char_t* def = PUGIXML_TEXT("")) const;
-
-		// Get text as a number, or the default value if conversion did not succeed or object is empty
-		int as_int(int def = 0) const;
-		unsigned int as_uint(unsigned int def = 0) const;
-		double as_double(double def = 0) const;
-		float as_float(float def = 0) const;
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		long long as_llong(long long def = 0) const;
-		unsigned long long as_ullong(unsigned long long def = 0) const;
-	#endif
-
-		// Get text as bool (returns true if first character is in '1tTyY' set), or the default value if object is empty
-		bool as_bool(bool def = false) const;
-
-		// Set text (returns false if object is empty or there is not enough memory)
-		bool set(const char_t* rhs);
-
-		// Set text with type conversion (numbers are converted to strings, boolean is converted to "true"/"false")
-		bool set(int rhs);
-		bool set(unsigned int rhs);
-		bool set(long rhs);
-		bool set(unsigned long rhs);
-		bool set(double rhs);
-		bool set(float rhs);
-		bool set(bool rhs);
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		bool set(long long rhs);
-		bool set(unsigned long long rhs);
-	#endif
-
-		// Set text (equivalent to set without error checking)
-		xml_text& operator=(const char_t* rhs);
-		xml_text& operator=(int rhs);
-		xml_text& operator=(unsigned int rhs);
-		xml_text& operator=(long rhs);
-		xml_text& operator=(unsigned long rhs);
-		xml_text& operator=(double rhs);
-		xml_text& operator=(float rhs);
-		xml_text& operator=(bool rhs);
-
-	#ifdef PUGIXML_HAS_LONG_LONG
-		xml_text& operator=(long long rhs);
-		xml_text& operator=(unsigned long long rhs);
-	#endif
-
-		// Get the data node (node_pcdata or node_cdata) for this object
-		xml_node data() const;
-	};
-
-#ifdef __BORLANDC__
-	// Borland C++ workaround
-	bool PUGIXML_FUNCTION operator&&(const xml_text& lhs, bool rhs);
-	bool PUGIXML_FUNCTION operator||(const xml_text& lhs, bool rhs);
 #endif
 
 	// Child node iterator (a bidirectional iterator over a collection of xml_node)
