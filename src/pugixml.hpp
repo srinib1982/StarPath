@@ -317,6 +317,119 @@ namespace pugi
 	};
 	#endif
 
+  	#define PUGI__GETHEADER_IMPL(object, page, flags) (((reinterpret_cast<char*>(object) - reinterpret_cast<char*>(page)) << 8) | (flags))
+	#define PUGI__NODETYPE(n) static_cast<xml_node_type>((n)->header & impl::xml_memory_page_type_mask)
+  namespace impl {
+    class xml_memory_page;
+	static const uintptr_t xml_memory_block_alignment = sizeof(void*);
+
+	// extra metadata bits
+	static const uintptr_t xml_memory_page_contents_shared_mask = 64;
+	static const uintptr_t xml_memory_page_name_allocated_mask = 32;
+	static const uintptr_t xml_memory_page_value_allocated_mask = 16;
+	static const uintptr_t xml_memory_page_type_mask = 15;
+
+	// combined masks for string uniqueness
+	static const uintptr_t xml_memory_page_name_allocated_or_shared_mask = xml_memory_page_name_allocated_mask | xml_memory_page_contents_shared_mask;
+	static const uintptr_t xml_memory_page_value_allocated_or_shared_mask = xml_memory_page_value_allocated_mask | xml_memory_page_contents_shared_mask;
+
+	// this macro casts pointers through void* to avoid 'cast increases required alignment of target type' warnings
+	#define PUGI__GETPAGE_IMPL(header) static_cast<impl::xml_memory_page*>(const_cast<void*>(static_cast<const void*>(reinterpret_cast<const char*>(&header) - (header >> 8))))
+
+	#define PUGI__GETPAGE(n) PUGI__GETPAGE_IMPL((n)->header)
+  }
+
+	struct xml_attribute_struct
+	{
+		xml_attribute_struct(impl::xml_memory_page* page): name(0), value(0), prev_attribute_c(0), next_attribute(0)
+		{
+			header = PUGI__GETHEADER_IMPL(this, page, 0);
+		}
+
+		uintptr_t header;
+
+		char_t*	name;
+		char_t*	value;
+
+		xml_attribute_struct* prev_attribute_c;
+		xml_attribute_struct* next_attribute;
+	};
+
+	struct xml_node_struct
+	{
+		xml_node_struct(impl::xml_memory_page* page, xml_node_type type): name(0), value(0), parent(0), first_child(0), prev_sibling_c(0), next_sibling(0), first_attribute(0)
+		{
+			header = PUGI__GETHEADER_IMPL(this, page, type);
+		}
+
+		uintptr_t header;
+
+		char_t* name;
+		char_t* value;
+
+		xml_node_struct* parent;
+
+		xml_node_struct* first_child;
+
+		xml_node_struct* prev_sibling_c;
+		xml_node_struct* next_sibling;
+
+		xml_attribute_struct* first_attribute;
+	};
+
+    class xml_node_struct_ref {
+    public:
+      xml_node_struct_ref(xml_node_struct* Node) : Node(Node) { }
+
+      char_t *name() const { return Node->name; }
+      char_t *value() const { return Node->value; }
+      xml_node_struct_ref parent() { return xml_node_struct_ref(Node->parent); }
+      xml_node_struct_ref first_child() { return xml_node_struct_ref(Node->first_child); }
+      xml_node_struct_ref prev_sibling_c() { return xml_node_struct_ref(Node->prev_sibling_c); }
+      xml_node_struct_ref next_sibling() { return xml_node_struct_ref(Node->next_sibling); }
+      xml_attribute_struct *first_attribute() { return Node->first_attribute; }
+      operator bool() const { return Node != nullptr; }
+      xml_node_type node_type() const { return PUGI__NODETYPE(Node); }
+
+      bool is_page_contents_shared();
+      bool is_page_name_allocated_or_shared() {
+        return Node->header & impl::xml_memory_page_name_allocated_or_shared_mask;
+      }
+      bool is_page_value_allocated_or_shared() {
+        return Node->header & impl::xml_memory_page_value_allocated_or_shared_mask;
+      }
+
+      bool operator==(const xml_node_struct_ref &RHS) const { return Node == RHS.Node; }
+
+    private:
+      xml_node_struct* Node;
+    };
+
+    class xml_attribute_struct_ref {
+    public:
+      xml_attribute_struct_ref(xml_attribute_struct* Node) : Node(Node) { }
+
+      char_t *name() const { return Node->name; }
+      char_t *value() const { return Node->value; }
+      xml_attribute_struct_ref prev_attribute_c() { return xml_attribute_struct_ref(Node->prev_attribute_c); }
+      xml_attribute_struct_ref next_attribute() { return xml_attribute_struct_ref(Node->next_attribute); }
+
+      bool is_page_contents_shared();
+      bool is_page_name_allocated_or_shared() {
+        return Node->header & impl::xml_memory_page_name_allocated_or_shared_mask;
+      }
+      bool is_page_value_allocated_or_shared() {
+        return Node->header & impl::xml_memory_page_value_allocated_or_shared_mask;
+      }
+
+
+      operator bool() const { return Node != nullptr; }
+      bool operator==(const xml_attribute_struct_ref &RHS) const { return Node == RHS.Node; }
+
+    private:
+      xml_attribute_struct* Node;
+    };
+
 	// A light-weight handle for manipulating attributes in DOM tree
 	class PUGIXML_CLASS xml_attribute
 	{
@@ -324,7 +437,7 @@ namespace pugi
 		friend class xml_node;
 
 	private:
-		xml_attribute_struct* _attr;
+		xml_attribute_struct_ref _attr;
 
 		typedef void (*unspecified_bool_type)(xml_attribute***);
 
@@ -333,7 +446,7 @@ namespace pugi
 		xml_attribute();
 
 		// Constructs attribute from internal pointer
-		explicit xml_attribute(xml_attribute_struct* attr);
+		explicit xml_attribute(xml_attribute_struct_ref p);
 
 		// Safe bool conversion operator
 		operator unspecified_bool_type() const;
@@ -415,6 +528,7 @@ namespace pugi
 
 		// Get internal pointer
 		xml_attribute_struct* internal_object() const;
+		xml_attribute_struct_ref internal_object_lol() const;
 	};
 
 #ifdef __BORLANDC__
@@ -431,7 +545,7 @@ namespace pugi
 		friend class xml_named_node_iterator;
 
 	protected:
-		xml_node_struct* _root;
+		xml_node_struct_ref _root;
 
 		typedef void (*unspecified_bool_type)(xml_node***);
 
@@ -440,7 +554,7 @@ namespace pugi
 		xml_node();
 
 		// Constructs node from internal pointer
-		explicit xml_node(xml_node_struct* p);
+		explicit xml_node(xml_node_struct_ref p);
 
 		// Safe bool conversion operator
 		operator unspecified_bool_type() const;
@@ -670,6 +784,7 @@ namespace pugi
 
 		// Get internal pointer
 		xml_node_struct* internal_object() const;
+		xml_node_struct_ref internal_object_lol() const;
 	};
 
 #ifdef __BORLANDC__

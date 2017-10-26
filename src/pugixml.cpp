@@ -142,7 +142,7 @@ using std::memset;
 #endif
 
 // We put implementation details into an anonymous namespace in source mode, but have to keep it in non-anonymous namespace in header-only mode to prevent binary bloat.
-#ifdef PUGIXML_HEADER_ONLY
+#ifndef PUGIXML_HEADER_ONLY
 #	define PUGI__NS_BEGIN namespace pugi { namespace impl {
 #	define PUGI__NS_END } }
 #	define PUGI__FN inline
@@ -281,24 +281,6 @@ PUGI__NS_BEGIN
 PUGI__NS_END
 
 PUGI__NS_BEGIN
-	static const uintptr_t xml_memory_block_alignment = sizeof(void*);
-
-	// extra metadata bits
-	static const uintptr_t xml_memory_page_contents_shared_mask = 64;
-	static const uintptr_t xml_memory_page_name_allocated_mask = 32;
-	static const uintptr_t xml_memory_page_value_allocated_mask = 16;
-	static const uintptr_t xml_memory_page_type_mask = 15;
-
-	// combined masks for string uniqueness
-	static const uintptr_t xml_memory_page_name_allocated_or_shared_mask = xml_memory_page_name_allocated_mask | xml_memory_page_contents_shared_mask;
-	static const uintptr_t xml_memory_page_value_allocated_or_shared_mask = xml_memory_page_value_allocated_mask | xml_memory_page_contents_shared_mask;
-
-	#define PUGI__GETHEADER_IMPL(object, page, flags) (((reinterpret_cast<char*>(object) - reinterpret_cast<char*>(page)) << 8) | (flags))
-	// this macro casts pointers through void* to avoid 'cast increases required alignment of target type' warnings
-	#define PUGI__GETPAGE_IMPL(header) static_cast<impl::xml_memory_page*>(const_cast<void*>(static_cast<const void*>(reinterpret_cast<const char*>(&header) - (header >> 8))))
-
-	#define PUGI__GETPAGE(n) PUGI__GETPAGE_IMPL((n)->header)
-	#define PUGI__NODETYPE(n) static_cast<xml_node_type>((n)->header & impl::xml_memory_page_type_mask)
 
 	struct xml_allocator;
 
@@ -528,46 +510,6 @@ PUGI__NS_BEGIN
 	}
 PUGI__NS_END
 
-namespace pugi
-{
-	struct xml_attribute_struct
-	{
-		xml_attribute_struct(impl::xml_memory_page* page): name(0), value(0), prev_attribute_c(0), next_attribute(0)
-		{
-			header = PUGI__GETHEADER_IMPL(this, page, 0);
-		}
-
-		uintptr_t header;
-
-		char_t*	name;
-		char_t*	value;
-
-		xml_attribute_struct* prev_attribute_c;
-		xml_attribute_struct* next_attribute;
-	};
-
-	struct xml_node_struct
-	{
-		xml_node_struct(impl::xml_memory_page* page, xml_node_type type): name(0), value(0), parent(0), first_child(0), prev_sibling_c(0), next_sibling(0), first_attribute(0)
-		{
-			header = PUGI__GETHEADER_IMPL(this, page, type);
-		}
-
-		uintptr_t header;
-
-		char_t* name;
-		char_t* value;
-
-		xml_node_struct* parent;
-
-		xml_node_struct* first_child;
-
-		xml_node_struct* prev_sibling_c;
-		xml_node_struct* next_sibling;
-
-		xml_attribute_struct* first_attribute;
-	};
-}
 
 PUGI__NS_BEGIN
 	struct xml_extra_buffer
@@ -601,6 +543,16 @@ PUGI__NS_BEGIN
 		return *static_cast<xml_document_struct*>(PUGI__GETPAGE(object)->allocator);
 	}
 PUGI__NS_END
+
+namespace pugi {
+  bool xml_node_struct_ref::is_page_contents_shared() {
+    return (impl::get_document(Node).header & impl::xml_memory_page_contents_shared_mask) != 0;
+  }
+
+  bool xml_attribute_struct_ref::is_page_contents_shared() {
+    return (impl::get_document(Node).header & impl::xml_memory_page_contents_shared_mask) != 0;
+  }
+}
 
 PUGI__NS_BEGIN
 	enum chartype_t
@@ -1276,6 +1228,30 @@ PUGI__NS_BEGIN
 		}
 	}
 
+	PUGI__FN bool node_is_before_sibling_lol(xml_node_struct_ref ln, xml_node_struct_ref rn)
+	{
+        assert(ln.parent() == rn.parent());
+
+		// there is no common ancestor (the shared parent is null), nodes are from different documents
+		if (!ln.parent()) return ln < rn;
+
+		// determine sibling order
+		xml_node_struct_ref ls = ln;
+		xml_node_struct_ref rs = rn;
+
+		while (ls && rs)
+		{
+			if (ls == rn) return true;
+			if (rs == ln) return false;
+
+			ls = ls.next_sibling();
+			rs = rs.next_sibling();
+		}
+
+		// if rn sibling chain ended ln must be before rn
+		return !rs;
+	}
+
 	PUGI__FN bool node_is_before_sibling(xml_node_struct* ln, xml_node_struct* rn)
 	{
 		assert(ln->parent == rn->parent);
@@ -1299,6 +1275,50 @@ PUGI__NS_BEGIN
 		// if rn sibling chain ended ln must be before rn
 		return !rs;
 	}
+
+	PUGI__FN bool node_is_before_lol(xml_node_struct_ref ln, xml_node_struct_ref rn)
+	{
+		// find common ancestor at the same depth, if any
+		xml_node_struct_ref lp = ln;
+		xml_node_struct_ref rp = rn;
+
+		while (lp && rp && lp.parent() != rp.parent())
+		{
+			lp = lp.parent();
+			rp = rp.parent();
+		}
+
+		// parents are the same!
+		if (lp && rp) return node_is_before_sibling_lol(lp, rp);
+
+		// nodes are at different depths, need to normalize heights
+		bool left_higher = !lp;
+
+		while (lp)
+		{
+			lp = lp.parent();
+			ln = ln.parent();
+		}
+
+		while (rp)
+		{
+			rp = rp.parent();
+			rn = rn.parent();
+		}
+
+		// one node is the ancestor of the other
+		if (ln == rn) return left_higher;
+
+		// find common ancestor... again
+		while (ln.parent() != rn.parent())
+		{
+			ln = ln.parent();
+			rn = rn.parent();
+		}
+
+		return node_is_before_sibling_lol(ln, rn);
+	}
+
 
 	PUGI__FN bool node_is_before(xml_node_struct* ln, xml_node_struct* rn)
 	{
@@ -1343,11 +1363,49 @@ PUGI__NS_BEGIN
 		return node_is_before_sibling(ln, rn);
 	}
 
+	PUGI__FN bool node_is_ancestor_lol(xml_node_struct_ref parent, xml_node_struct_ref node)
+	{
+		while (node && node != parent) node = node.parent();
+
+		return parent && node == parent;
+	}
+
 	PUGI__FN bool node_is_ancestor(xml_node_struct* parent, xml_node_struct* node)
 	{
 		while (node && node != parent) node = node->parent;
 
 		return parent && node == parent;
+	}
+
+	PUGI__FN const void* document_buffer_order_lol(const xpath_node& xnode)
+	{
+		xml_node_struct_ref node = xnode.node().internal_object_lol();
+
+		if (node)
+		{
+          if (!node.is_page_contents_shared())
+			{
+              if (node.name() && !node.is_page_name_allocated_or_shared()) return node.name();
+              if (node.value() && !node.is_page_value_allocated_or_shared()) return node.value();
+			}
+
+			return 0;
+		}
+
+		xml_attribute_struct_ref attr = xnode.attribute().internal_object_lol();
+
+		if (attr)
+		{
+            if (!attr.is_page_contents_shared())
+			{
+              if (attr.name() && !attr.is_page_name_allocated_or_shared()) return attr.name();
+              if (attr.value() && !attr.is_page_value_allocated_or_shared()) return attr.value();
+			}
+
+			return 0;
+		}
+
+		return 0;
 	}
 
 	PUGI__FN const void* document_buffer_order(const xpath_node& xnode)
@@ -1431,7 +1489,7 @@ PUGI__NS_BEGIN
 
 			if (!ln || !rn) return ln < rn;
 
-			return node_is_before(ln.internal_object(), rn.internal_object());
+			return node_is_before_lol(ln.internal_object_lol(), rn.internal_object_lol());
 		}
 	};
 
@@ -3056,6 +3114,46 @@ PUGI__NS_BEGIN
 				pred->apply_predicate(ns, first, stack, !pred->_next && last_once);
 		}
 
+		bool step_push_lol(xpath_node_set_raw& ns, xml_attribute_struct_ref a, xml_node_struct_ref parent, xpath_allocator* alloc)
+		{
+			assert(a);
+
+			const char_t* name = a.name() ? a.name() + 0 : PUGIXML_TEXT("");
+
+			switch (_test)
+			{
+			case nodetest_name:
+				if (strequal(name, _data.nodetest) && is_xpath_attribute(name))
+				{
+					ns.push_back(xpath_node(xml_attribute(a), xml_node(parent)), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_type_node:
+			case nodetest_all:
+				if (is_xpath_attribute(name))
+				{
+					ns.push_back(xpath_node(xml_attribute(a), xml_node(parent)), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_all_in_namespace:
+				if (starts_with(name, _data.nodetest) && is_xpath_attribute(name))
+				{
+					ns.push_back(xpath_node(xml_attribute(a), xml_node(parent)), alloc);
+					return true;
+				}
+				break;
+
+			default:
+				;
+			}
+
+			return false;
+		}
+
 		bool step_push(xpath_node_set_raw& ns, xml_attribute_struct* a, xml_node_struct* parent, xpath_allocator* alloc)
 		{
 			assert(a);
@@ -3091,6 +3189,81 @@ PUGI__NS_BEGIN
 
 			default:
 				;
+			}
+
+			return false;
+		}
+
+		bool step_push_lol(xpath_node_set_raw& ns, xml_node_struct_ref n, xpath_allocator* alloc)
+		{
+			assert(n);
+
+			xml_node_type type = n.node_type();
+
+			switch (_test)
+			{
+			case nodetest_name:
+				if (type == node_element && n.name() && strequal(n.name(), _data.nodetest))
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_type_node:
+				ns.push_back(xml_node(n), alloc);
+				return true;
+
+			case nodetest_type_comment:
+				if (type == node_comment)
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_type_text:
+				if (type == node_pcdata || type == node_cdata)
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_type_pi:
+				if (type == node_pi)
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_pi:
+				if (type == node_pi && n.name() && strequal(n.name(), _data.nodetest))
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_all:
+				if (type == node_element)
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			case nodetest_all_in_namespace:
+				if (type == node_element && n.name() && starts_with(n.name(), _data.nodetest))
+				{
+					ns.push_back(xml_node(n), alloc);
+					return true;
+				}
+				break;
+
+			default:
+				assert(false && "Unknown axis"); // unreachable
 			}
 
 			return false;
@@ -3169,6 +3342,199 @@ PUGI__NS_BEGIN
 			}
 
 			return false;
+		}
+
+		template <class T> void step_fill_lol(xpath_node_set_raw& ns, xml_node_struct_ref n, xpath_allocator* alloc, bool once, T)
+		{
+			const axis_t axis = T::axis;
+
+			switch (axis)
+			{
+			case axis_attribute:
+			{
+                for (xml_attribute_struct_ref a = n.first_attribute(); a; a = a.next_attribute())
+					if (step_push_lol(ns, a, n, alloc) & once)
+						return;
+
+				break;
+			}
+
+			case axis_child:
+			{
+				for (xml_node_struct_ref c = n.first_child(); c; c = c.next_sibling())
+					if (step_push_lol(ns, c, alloc) & once)
+						return;
+
+				break;
+			}
+
+			case axis_descendant:
+			case axis_descendant_or_self:
+			{
+				if (axis == axis_descendant_or_self)
+					if (step_push_lol(ns, n, alloc) & once)
+						return;
+
+				xml_node_struct_ref cur = n.first_child();
+
+				while (cur)
+				{
+					if (step_push_lol(ns, cur, alloc) & once)
+						return;
+
+					if (cur.first_child())
+						cur = cur.first_child();
+					else
+					{
+						while (!cur.next_sibling())
+						{
+							cur = cur.parent();
+
+							if (cur == n) return;
+						}
+
+						cur = cur.next_sibling();
+					}
+				}
+
+				break;
+			}
+
+			case axis_following_sibling:
+			{
+				for (xml_node_struct_ref c = n.next_sibling(); c; c = c.next_sibling())
+					if (step_push_lol(ns, c, alloc) & once)
+						return;
+
+				break;
+			}
+
+			case axis_preceding_sibling:
+			{
+				for (xml_node_struct_ref c = n.prev_sibling_c(); c.next_sibling(); c = c.prev_sibling_c())
+					if (step_push_lol(ns, c, alloc) & once)
+						return;
+
+				break;
+			}
+
+			case axis_following:
+			{
+				xml_node_struct_ref cur = n;
+
+				// exit from this node so that we don't include descendants
+				while (!cur.next_sibling())
+				{
+					cur = cur.parent();
+
+					if (!cur) return;
+				}
+
+				cur = cur.next_sibling();
+
+				while (cur)
+				{
+					if (step_push_lol(ns, cur, alloc) & once)
+						return;
+
+					if (cur.first_child())
+						cur = cur.first_child();
+					else
+					{
+						while (!cur.next_sibling())
+						{
+							cur = cur.parent();
+
+							if (!cur) return;
+						}
+
+						cur = cur.next_sibling();
+					}
+				}
+
+				break;
+			}
+
+			case axis_preceding:
+			{
+				xml_node_struct_ref cur = n;
+
+				// exit from this node so that we don't include descendants
+				while (!cur.prev_sibling_c().next_sibling())
+				{
+					cur = cur.parent();
+
+					if (!cur) return;
+				}
+
+				cur = cur.prev_sibling_c();
+
+				while (cur)
+				{
+					if (cur.first_child())
+						cur = cur.first_child().prev_sibling_c();
+					else
+					{
+						// leaf node, can't be ancestor
+						if (step_push_lol(ns, cur, alloc) & once)
+							return;
+
+						while (!cur.prev_sibling_c().next_sibling())
+						{
+							cur = cur.parent();
+
+							if (!cur) return;
+
+							if (!node_is_ancestor_lol(cur, n))
+								if (step_push_lol(ns, cur, alloc) & once)
+									return;
+						}
+
+						cur = cur.prev_sibling_c();
+					}
+				}
+
+				break;
+			}
+
+			case axis_ancestor:
+			case axis_ancestor_or_self:
+			{
+				if (axis == axis_ancestor_or_self)
+					if (step_push_lol(ns, n, alloc) & once)
+						return;
+
+				xml_node_struct_ref cur = n.parent();
+
+				while (cur)
+				{
+					if (step_push_lol(ns, cur, alloc) & once)
+						return;
+
+					cur = cur.parent();
+				}
+
+				break;
+			}
+
+			case axis_self:
+			{
+				step_push_lol(ns, n, alloc);
+
+				break;
+			}
+
+			case axis_parent:
+			{
+				if (n.parent())
+					step_push_lol(ns, n.parent(), alloc);
+
+				break;
+			}
+
+			default:
+				assert(false && "Unimplemented axis"); // unreachable
+			}
 		}
 
 		template <class T> void step_fill(xpath_node_set_raw& ns, xml_node_struct* n, xpath_allocator* alloc, bool once, T)
@@ -3356,6 +3722,87 @@ PUGI__NS_BEGIN
 				if (n->parent)
 					step_push(ns, n->parent, alloc);
 
+				break;
+			}
+
+			default:
+				assert(false && "Unimplemented axis"); // unreachable
+			}
+		}
+
+		template <class T> void step_fill_lol(xpath_node_set_raw& ns, xml_attribute_struct_ref a, xml_node_struct_ref p, xpath_allocator* alloc, bool once, T v)
+		{
+			const axis_t axis = T::axis;
+
+			switch (axis)
+			{
+			case axis_ancestor:
+			case axis_ancestor_or_self:
+			{
+				if (axis == axis_ancestor_or_self && _test == nodetest_type_node) // reject attributes based on principal node type test
+					if (step_push_lol(ns, a, p, alloc) & once)
+						return;
+
+				xml_node_struct_ref cur = p;
+
+				while (cur)
+				{
+					if (step_push_lol(ns, cur, alloc) & once)
+						return;
+
+					cur = cur.parent();
+				}
+
+				break;
+			}
+
+			case axis_descendant_or_self:
+			case axis_self:
+			{
+				if (_test == nodetest_type_node) // reject attributes based on principal node type test
+					step_push_lol(ns, a, p, alloc);
+
+				break;
+			}
+
+			case axis_following:
+			{
+				xml_node_struct_ref cur = p;
+
+				while (cur)
+				{
+					if (cur.first_child())
+						cur = cur.first_child();
+					else
+					{
+						while (!cur.next_sibling())
+						{
+							cur = cur.parent();
+
+							if (!cur) return;
+						}
+
+						cur = cur.next_sibling();
+					}
+
+					if (step_push_lol(ns, cur, alloc) & once)
+						return;
+				}
+
+				break;
+			}
+
+			case axis_parent:
+			{
+				step_push_lol(ns, p, alloc);
+
+				break;
+			}
+
+			case axis_preceding:
+			{
+				// preceding:: axis does not include attribute nodes and attribute ancestors (they are the same as parent's ancestors), so we can reuse node preceding
+				step_fill_lol(ns, p, alloc, once, v);
 				break;
 			}
 
