@@ -14,6 +14,11 @@
 #ifndef SOURCE_PUGIXML_CPP
 #define SOURCE_PUGIXML_CPP
 
+#include "llvm/IR/Module.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/IRReader/IRReader.h"
+
 #include "pugixml.hpp"
 
 #include <stdlib.h>
@@ -142,22 +147,48 @@ using std::memset;
 #endif
 
 // We put implementation details into an anonymous namespace in source mode, but have to keep it in non-anonymous namespace in header-only mode to prevent binary bloat.
-#ifndef PUGIXML_HEADER_ONLY
-#	define PUGI__NS_BEGIN namespace pugi { namespace impl {
-#	define PUGI__NS_END } }
-#	define PUGI__FN inline
-#	define PUGI__FN_NO_INLINE inline
-#else
-#	if defined(_MSC_VER) && _MSC_VER < 1300 // MSVC6 seems to have an amusing bug with anonymous namespaces inside namespaces
+#	define PUGI__FN 
+#	define PUGI__FN_NO_INLINE
 #		define PUGI__NS_BEGIN namespace pugi { namespace impl {
 #		define PUGI__NS_END } }
-#	else
-#		define PUGI__NS_BEGIN namespace pugi { namespace impl { namespace {
-#		define PUGI__NS_END } } }
-#	endif
-#	define PUGI__FN
-#	define PUGI__FN_NO_INLINE PUGI__NO_INLINE
-#endif
+
+// #ifnef PUGIXML_HEADER_ONLY
+// #	define PUGI__NS_BEGIN namespace pugi { namespace impl {
+// #	define PUGI__NS_END } }
+// #	define PUGI__FN inline
+// #	define PUGI__FN_NO_INLINE inline
+// #else
+// #	if defined(_MSC_VER) && _MSC_VER < 1300 // MSVC6 seems to have an amusing bug with anonymous namespaces inside namespaces
+// #		define PUGI__NS_BEGIN namespace pugi { namespace impl {
+// #		define PUGI__NS_END } }
+// #	else
+// #		define PUGI__NS_BEGIN namespace pugi { namespace impl { namespace {
+// #		define PUGI__NS_END } } }
+// #	endif
+// #	define PUGI__FN
+// #	define PUGI__FN_NO_INLINE PUGI__NO_INLINE
+// #endif
+
+int main(int argc, char *argv[])  {
+  assert(argc == 3);
+
+  llvm::LLVMContext C;
+  llvm::SMDiagnostic Err;
+  std::unique_ptr<llvm::Module> M = llvm::parseIRFile(argv[2], Err, C);
+  pugi::xml_node_struct_ref Node(M.get());
+
+  pugi::xpath_variable_set variables;
+  pugi::xpath_query q(argv[1], &variables);
+  pugi::char_t result[255];
+  // size_t size = q.evaluate_string(result, 255, pugi::xml_node(Node));
+  // if (size)
+  //   printf("%s\n", result);
+
+  pugi::xpath_node_set Result = q.evaluate_node_set(pugi::xml_node(Node));
+  for (const pugi::xpath_node &N : Result)
+    N.node().internal_object().dump();
+
+}
 
 // uintptr_t
 #if (defined(_MSC_VER) && _MSC_VER < 1600) || (defined(__BORLANDC__) && __BORLANDC__ < 0x561)
@@ -545,12 +576,219 @@ PUGI__NS_BEGIN
 PUGI__NS_END
 
 namespace pugi {
+  PUGI__FN xml_node::xml_node(): _root()
+  {
+  }
+
+  PUGI__FN xml_node::xml_node(xml_node_struct_ref p): _root(p)
+  {
+  }
+
+	PUGI__FN xml_attribute xml_node::attribute(const char_t* name_) const
+	{
+		if (!_root) return xml_attribute();
+
+		for (xml_attribute_struct_ref i = _root.first_attribute(); i; i = i.next_attribute())
+          if (i.name() && impl::strequal(name_, i.name()))
+				return xml_attribute(i);
+
+		return xml_attribute();
+	}
+
+	PUGI__FN xml_attribute xml_node::first_attribute() const
+	{
+      return _root ? xml_attribute(_root.first_attribute()) : xml_attribute();
+	}
+
+	PUGI__FN xml_attribute xml_node::last_attribute() const
+	{
+      return _root && _root.first_attribute() ? xml_attribute(_root.first_attribute().prev_attribute_c()) : xml_attribute();
+	}
+
+	PUGI__FN xml_node xml_node::first_child() const
+	{
+      return _root ? xml_node(_root.first_child()) : xml_node();
+	}
+
+	PUGI__FN xml_node xml_node::last_child() const
+	{
+      return _root && _root.first_child() ? xml_node(_root.first_child().prev_sibling_c()) : xml_node();
+	}
+
+	PUGI__FN xml_node_struct_ref xml_node::internal_object() const
+	{
+		return _root;
+	}
+
+	PUGI__FN const char_t* xml_node::name() const
+	{
+      return (_root && _root.name()) ? _root.name() + 0 : PUGIXML_TEXT("");
+	}
+
+	PUGI__FN xml_node_type xml_node::type() const
+	{
+		return _root ? _root.node_type() : node_null;
+	}
+
+	PUGI__FN const char_t* xml_node::value() const
+	{
+		return (_root && _root.value()) ? _root.value() + 0 : PUGIXML_TEXT("");
+	}
+
+	PUGI__FN xml_node xml_node::next_sibling() const
+	{
+		return _root ? xml_node(_root.next_sibling()) : xml_node();
+	}
+
+	PUGI__FN bool xml_node::operator==(const xml_node& r) const
+	{
+		return (_root == r._root);
+	}
+
+	PUGI__FN bool xml_node::operator!() const
+	{
+		return !_root;
+	}
+
+
+	PUGI__FN xml_node xml_node::parent() const
+	{
+      return _root ? xml_node(_root.parent()) : xml_node();
+	}
+
+	PUGI__FN xml_node xml_node::root() const
+	{
+      return _root ? xml_node(_root.get_document()) : xml_node();
+	}
+
+	PUGI__FN static void unspecified_bool_xml_node(xml_node***)
+	{
+	}
+
+	PUGI__FN xml_node::operator xml_node::unspecified_bool_type() const
+	{
+		return _root ? unspecified_bool_xml_node : 0;
+	}
+
+	PUGI__FN bool xml_node::operator!=(const xml_node& r) const
+	{
+		return (_root != r._root);
+	}
+
+	PUGI__FN bool xml_node::operator<(const xml_node& r) const
+	{
+		return (_root < r._root);
+	}
+
+	PUGI__FN bool xml_node::operator>(const xml_node& r) const
+	{
+		return (_root > r._root);
+	}
+
+	PUGI__FN bool xml_node::operator<=(const xml_node& r) const
+	{
+		return (_root <= r._root);
+	}
+
+	PUGI__FN bool xml_node::operator>=(const xml_node& r) const
+	{
+		return (_root >= r._root);
+	}
+
+	PUGI__FN bool xml_node::empty() const
+	{
+		return !_root;
+	}
+
+  PUGI__FN xml_attribute::xml_attribute(): _attr(0)
+  {
+  }
+
+  PUGI__FN xml_attribute::xml_attribute(xml_attribute_struct_ref attr): _attr(attr)
+  {
+  }
+
+	PUGI__FN xml_attribute_struct_ref xml_attribute::internal_object() const
+	{
+		return _attr;
+	}
+	PUGI__FN bool xml_attribute::empty() const
+	{
+		return !_attr;
+	}
+
+	PUGI__FN const char_t* xml_attribute::name() const
+	{
+      return (_attr && _attr.name()) ? _attr.name() + 0 : PUGIXML_TEXT("");
+	}
+
+	PUGI__FN const char_t* xml_attribute::value() const
+	{
+      return (_attr && _attr.value()) ? _attr.value() + 0 : PUGIXML_TEXT("");
+	}
+
+	PUGI__FN xml_attribute xml_attribute::next_attribute() const
+	{
+      return _attr ? xml_attribute(_attr.next_attribute()) : xml_attribute();
+	}
+
+	PUGI__FN bool xml_attribute::operator==(const xml_attribute& r) const
+	{
+		return (_attr == r._attr);
+	}
+
+	PUGI__FN bool xml_attribute::operator!=(const xml_attribute& r) const
+	{
+		return (_attr != r._attr);
+	}
+
+	PUGI__FN bool xml_attribute::operator<(const xml_attribute& r) const
+	{
+		return (_attr < r._attr);
+	}
+
+	PUGI__FN bool xml_attribute::operator>(const xml_attribute& r) const
+	{
+		return (_attr > r._attr);
+	}
+
+	PUGI__FN bool xml_attribute::operator<=(const xml_attribute& r) const
+	{
+		return (_attr <= r._attr);
+	}
+
+	PUGI__FN bool xml_attribute::operator>=(const xml_attribute& r) const
+	{
+		return (_attr >= r._attr);
+	}
+
+	PUGI__FN static void unspecified_bool_xml_attribute(xml_attribute***)
+	{
+	}
+
+	PUGI__FN xml_attribute::operator xml_attribute::unspecified_bool_type() const
+	{
+		return _attr ? unspecified_bool_xml_attribute : 0;
+	}
+}
+
+// namespace pugi {
+//   bool xml_node_struct_ref::is_page_contents_shared() {
+//     return (impl::get_document(Node).header & impl::xml_memory_page_contents_shared_mask) != 0;
+//   }
+
+//   bool xml_attribute_struct_ref::is_page_contents_shared() {
+//     return (impl::get_document(Node).header & impl::xml_memory_page_contents_shared_mask) != 0;
+//   }
+// }
+
+namespace pugi {
   bool xml_node_struct_ref::is_page_contents_shared() {
-    return (impl::get_document(Node).header & impl::xml_memory_page_contents_shared_mask) != 0;
+    return false;
   }
 
   bool xml_attribute_struct_ref::is_page_contents_shared() {
-    return (impl::get_document(Node).header & impl::xml_memory_page_contents_shared_mask) != 0;
+    return false;
   }
 }
 

@@ -6,6 +6,11 @@ option(BUILD_SHARED_LIBS "Build shared instead of static library" OFF)
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_PKGCONFIG "Build in PKGCONFIG mode" OFF)
 
+find_package(LLVM REQUIRED CONFIG)
+include_directories(${LLVM_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(llvm_libs support core irreader)
+
 set(BUILD_DEFINES "" CACHE STRING "Build defines")
 
 if(MSVC)
@@ -29,6 +34,9 @@ mark_as_advanced(CLEAR CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_INCLUDEDIR)
 
 set(HEADERS src/pugixml.hpp src/pugiconfig.hpp)
 set(SOURCES ${HEADERS} src/pugixml.cpp)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+add_executable(llvm-xpath ${SOURCES})
+target_link_libraries(llvm-xpath ${llvm_libs})
 
 if(DEFINED BUILD_DEFINES)
 	foreach(DEFINE ${BUILD_DEFINES})
@@ -41,6 +49,7 @@ if(BUILD_SHARED_LIBS)
 else()
 	add_library(pugixml STATIC ${SOURCES})
 endif()
+target_link_libraries(pugixml ${llvm_libs})
 
 # Enable C++11 long long for compilers that are capable of it
 if(NOT ${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION} STRLESS 3.1 AND ";${CMAKE_CXX_COMPILE_FEATURES};" MATCHES ";cxx_long_long_type;")

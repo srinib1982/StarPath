@@ -240,10 +240,6 @@ namespace pugi
 	struct xml_attribute_struct;
 	struct xml_node_struct;
 
-	class xml_node_iterator;
-	class xml_attribute_iterator;
-	class xml_named_node_iterator;
-
 	class xml_tree_walker;
 
 	struct xml_parse_result;
@@ -375,17 +371,44 @@ namespace pugi
 		xml_attribute_struct* first_attribute;
 	};
 
+    class xml_attribute_struct_ref {
+    public:
+      xml_attribute_struct_ref(xml_attribute_struct* Node) : Node(Node) { }
+
+      char_t *name() const { return Node->name; }
+      char_t *value() const { return Node->value; }
+      xml_attribute_struct_ref prev_attribute_c() const { return xml_attribute_struct_ref(Node->prev_attribute_c); }
+      xml_attribute_struct_ref next_attribute() const { return xml_attribute_struct_ref(Node->next_attribute); }
+
+      bool is_page_contents_shared();
+      bool is_page_name_allocated_or_shared() const {
+        return Node->header & impl::xml_memory_page_name_allocated_or_shared_mask;
+      }
+      bool is_page_value_allocated_or_shared() const {
+        return Node->header & impl::xml_memory_page_value_allocated_or_shared_mask;
+      }
+
+
+      operator bool() const { return Node != nullptr; }
+      bool operator==(const xml_attribute_struct_ref &RHS) const { return Node == RHS.Node; }
+
+    private:
+      xml_attribute_struct* Node;
+    };
+
+  /*
     class xml_node_struct_ref {
     public:
       xml_node_struct_ref(xml_node_struct* Node) : Node(Node) { }
 
       char_t *name() const { return Node->name; }
       char_t *value() const { return Node->value; }
-      xml_node_struct_ref parent() { return xml_node_struct_ref(Node->parent); }
-      xml_node_struct_ref first_child() { return xml_node_struct_ref(Node->first_child); }
-      xml_node_struct_ref prev_sibling_c() { return xml_node_struct_ref(Node->prev_sibling_c); }
-      xml_node_struct_ref next_sibling() { return xml_node_struct_ref(Node->next_sibling); }
-      xml_attribute_struct *first_attribute() { return Node->first_attribute; }
+      xml_node_struct_ref parent() const { return xml_node_struct_ref(Node->parent); }
+      xml_node_struct_ref first_child() const { return xml_node_struct_ref(Node->first_child); }
+      xml_node_struct_ref prev_sibling_c() const { return xml_node_struct_ref(Node->prev_sibling_c); }
+      xml_node_struct_ref next_sibling() const { return xml_node_struct_ref(Node->next_sibling); }
+      xml_node_struct_ref get_document() const { /*TODO:  &impl::get_document(_root)* / }
+      xml_attribute_struct_ref first_attribute() const { return xml_attribute_struct_ref(Node->first_attribute); }
       operator bool() const { return Node != nullptr; }
       xml_node_type node_type() const { return PUGI__NODETYPE(Node); }
 
@@ -402,36 +425,238 @@ namespace pugi
     private:
       xml_node_struct* Node;
     };
+  */
 
-    class xml_attribute_struct_ref {
+    class xml_node_struct_ref {
+    private:
+      enum Type {
+        Null,
+        Module,
+        Value,
+        Use
+      };
+
+      Type T;
+      llvm::Value *V;
+      llvm::Module *M;
+      llvm::Use *U;
+
+    private:
+      llvm::Module *getModule() const { assert(T == Module); return M; }
+      llvm::Value *getValue() const { assert(T == Value); return V; }
+      llvm::Use *getUse() const { assert(T == Use); return U; }
+
     public:
-      xml_attribute_struct_ref(xml_attribute_struct* Node) : Node(Node) { }
+      xml_node_struct_ref(llvm::Module *M) : T(Module), V(nullptr), M(M), U(nullptr) { }
+      xml_node_struct_ref(llvm::Value *V) : T(Value), V(V), M(nullptr), U(nullptr) { }
+      xml_node_struct_ref(llvm::Use *U) : T(Use), V(nullptr), M(nullptr), U(U) { }
+      xml_node_struct_ref() : T(Null), V(nullptr), M(nullptr), U(nullptr) { }
 
-      char_t *name() const { return Node->name; }
-      char_t *value() const { return Node->value; }
-      xml_attribute_struct_ref prev_attribute_c() { return xml_attribute_struct_ref(Node->prev_attribute_c); }
-      xml_attribute_struct_ref next_attribute() { return xml_attribute_struct_ref(Node->next_attribute); }
+      void dump() {
+        switch (T) {
+        case Module:
+          break;
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue())) {
+            I->dump();
+          } else if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(getValue())) {
+            BB->dump();
+          } else if (auto *F = llvm::dyn_cast<llvm::Function>(getValue())) {
+            F->dump();
+          }
+
+          break;
+        case Use:
+          getUse()->getUser()->dump();
+        }
+      }
+
+      const char_t *name() const {
+        switch (T) {
+        case Module:
+          return getModule()->getName().data();
+          break;
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue()))
+            return I->getOpcodeName();
+          else
+            return getValue()->getName().data();
+          break;
+        }
+
+        return nullptr;
+      }
+
+      char_t *value() const { }
+
+      xml_node_struct_ref parent() const {
+        switch (T) {
+        case Module:
+          break;
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue())) {
+            return xml_node_struct_ref(I->getParent());
+          } else if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(getValue())) {
+            return xml_node_struct_ref(BB->getParent());
+          } else if (auto *F = llvm::dyn_cast<llvm::Function>(getValue())) {
+            return xml_node_struct_ref(F->getParent());
+          }
+
+          break;
+        case Use:
+          return xml_node_struct_ref(getUse()->getUser());
+        }
+
+        return xml_node_struct_ref();
+      }
+
+      xml_node_struct_ref first_child() const {
+        switch (T) {
+        case Module:
+          {
+            auto It = getModule()->begin();
+            if (It != getModule()->end())
+              return xml_node_struct_ref(&*It);
+            break;
+          }
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue())) {
+            auto It = I->op_begin();
+            if (It != I->op_end())
+              return xml_node_struct_ref(&*It);
+          } else if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(getValue())) {
+            auto It = BB->begin();
+            if (It != BB->end())
+              return xml_node_struct_ref(&*It);
+          } else if (auto *F = llvm::dyn_cast<llvm::Function>(getValue())) {
+            auto It = F->begin();
+            if (It != F->end())
+              return xml_node_struct_ref(&*It);
+          }
+
+          break;
+        case Use:
+          break;
+        }
+
+        return xml_node_struct_ref();
+      }
+
+      xml_node_struct_ref prev_sibling_c() const {
+        switch (T) {
+        case Module:
+          break;
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue())) {
+            auto It = I->getIterator();
+            if (It == I->getParent()->begin()) {
+              return xml_node_struct_ref(&*I->getParent()->rbegin());
+            } else {
+              return xml_node_struct_ref(&*--It);
+            }
+          } else if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(getValue())) {
+            auto It = BB->getIterator();
+            if (It == BB->getParent()->begin()) {
+              return xml_node_struct_ref(&BB->getParent()->back());
+            } else {
+              return xml_node_struct_ref(&*--It);
+            }
+          } else if (auto *F = llvm::dyn_cast<llvm::Function>(getValue())) {
+            auto It = F->getIterator();
+            if (It == F->getParent()->begin()) {
+              return xml_node_struct_ref(&*F->getParent()->rbegin());
+            } else {
+              return xml_node_struct_ref(&*--It);
+            }
+          }
+
+          break;
+        case Use:
+          auto It = getUse()->getOperandNo();
+          llvm::User *U = getUse()->getUser();
+          if (It == 0) {
+            return xml_node_struct_ref(U->getOperand(U->getNumOperands() - 1));
+          } else {
+            return xml_node_struct_ref(U->getOperand(--It));
+          }
+          break;
+        }
+
+        return xml_node_struct_ref();
+      }
+
+      xml_node_struct_ref next_sibling() const {
+        switch (T) {
+        case Module:
+          break;
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue())) {
+            auto It = I->getIterator();
+            It++;
+            if (It != I->getParent()->end())
+              return xml_node_struct_ref(&*It);
+          } else if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(getValue())) {
+            auto It = BB->getIterator();
+            It++;
+            if (It != BB->getParent()->end())
+              return xml_node_struct_ref(&*It);
+          } else if (auto *F = llvm::dyn_cast<llvm::Function>(getValue())) {
+            auto It = F->getIterator();
+            It++;
+            if (It != F->getParent()->end())
+              return xml_node_struct_ref(&*It);
+          }
+
+          break;
+        case Use:
+          auto It = getUse()->getNext();
+          if (It != nullptr)
+            return xml_node_struct_ref(It);
+          break;
+        }
+
+        return xml_node_struct_ref();
+      }
+
+      xml_node_struct_ref get_document() const {
+        switch (T) {
+        case Module:
+          return *this;
+        case Value:
+          if (auto *I = llvm::dyn_cast<llvm::Instruction>(getValue())) {
+            return xml_node_struct_ref(I->getParent()).get_document();
+          } else if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(getValue())) {
+            return xml_node_struct_ref(BB->getParent()).get_document();
+          } else if (auto *F = llvm::dyn_cast<llvm::Function>(getValue())) {
+            return xml_node_struct_ref(F->getParent()).get_document();
+          }
+        case Use:
+          return xml_node_struct_ref(getUse()->getUser()).get_document();
+        }
+
+        assert(false);
+      }
+
+      xml_attribute_struct_ref first_attribute() const { return xml_attribute_struct_ref(nullptr); }
+      operator bool() const { return T != Null; }
+      xml_node_type node_type() const { return node_element; }
 
       bool is_page_contents_shared();
       bool is_page_name_allocated_or_shared() {
-        return Node->header & impl::xml_memory_page_name_allocated_or_shared_mask;
+        return false;
       }
       bool is_page_value_allocated_or_shared() {
-        return Node->header & impl::xml_memory_page_value_allocated_or_shared_mask;
+        return false;
       }
 
-
-      operator bool() const { return Node != nullptr; }
-      bool operator==(const xml_attribute_struct_ref &RHS) const { return Node == RHS.Node; }
-
-    private:
-      xml_attribute_struct* Node;
+      bool operator==(const xml_node_struct_ref &RHS) const {
+        return false;
+      }
     };
 
 	// A light-weight handle for manipulating attributes in DOM tree
 	class PUGIXML_CLASS xml_attribute
 	{
-		friend class xml_attribute_iterator;
 		friend class xml_node;
 
 	private:
@@ -537,10 +762,6 @@ namespace pugi
 	// A light-weight handle for manipulating nodes in DOM tree
 	class PUGIXML_CLASS xml_node
 	{
-		friend class xml_attribute_iterator;
-		friend class xml_node_iterator;
-		friend class xml_named_node_iterator;
-
 	protected:
 		xml_node_struct_ref _root;
 
@@ -752,24 +973,6 @@ namespace pugi
 		void print(std::basic_ostream<char, std::char_traits<char> >& os, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, xml_encoding encoding = encoding_auto, unsigned int depth = 0) const;
 		void print(std::basic_ostream<wchar_t, std::char_traits<wchar_t> >& os, const char_t* indent = PUGIXML_TEXT("\t"), unsigned int flags = format_default, unsigned int depth = 0) const;
 	#endif
-
-		// Child nodes iterators
-		typedef xml_node_iterator iterator;
-
-		iterator begin() const;
-		iterator end() const;
-
-		// Attribute iterators
-		typedef xml_attribute_iterator attribute_iterator;
-
-		attribute_iterator attributes_begin() const;
-		attribute_iterator attributes_end() const;
-
-		// Range-based for support
-		xml_object_range<xml_node_iterator> children() const;
-		xml_object_range<xml_named_node_iterator> children(const char_t* name) const;
-		xml_object_range<xml_attribute_iterator> attributes() const;
-
 		// Get node offset in parsed file/string (in char_t units) for debugging purposes
 		ptrdiff_t offset_debug() const;
 
@@ -785,133 +988,6 @@ namespace pugi
 	bool PUGIXML_FUNCTION operator&&(const xml_node& lhs, bool rhs);
 	bool PUGIXML_FUNCTION operator||(const xml_node& lhs, bool rhs);
 #endif
-
-	// Child node iterator (a bidirectional iterator over a collection of xml_node)
-	class PUGIXML_CLASS xml_node_iterator
-	{
-		friend class xml_node;
-
-	private:
-		mutable xml_node _wrap;
-		xml_node _parent;
-
-		xml_node_iterator(xml_node_struct* ref, xml_node_struct* parent);
-
-	public:
-		// Iterator traits
-		typedef ptrdiff_t difference_type;
-		typedef xml_node value_type;
-		typedef xml_node* pointer;
-		typedef xml_node& reference;
-
-	#ifndef PUGIXML_NO_STL
-		typedef std::bidirectional_iterator_tag iterator_category;
-	#endif
-
-		// Default constructor
-		xml_node_iterator();
-
-		// Construct an iterator which points to the specified node
-		xml_node_iterator(const xml_node& node);
-
-		// Iterator operators
-		bool operator==(const xml_node_iterator& rhs) const;
-		bool operator!=(const xml_node_iterator& rhs) const;
-
-		xml_node& operator*() const;
-		xml_node* operator->() const;
-
-		const xml_node_iterator& operator++();
-		xml_node_iterator operator++(int);
-
-		const xml_node_iterator& operator--();
-		xml_node_iterator operator--(int);
-	};
-
-	// Attribute iterator (a bidirectional iterator over a collection of xml_attribute)
-	class PUGIXML_CLASS xml_attribute_iterator
-	{
-		friend class xml_node;
-
-	private:
-		mutable xml_attribute _wrap;
-		xml_node _parent;
-
-		xml_attribute_iterator(xml_attribute_struct* ref, xml_node_struct* parent);
-
-	public:
-		// Iterator traits
-		typedef ptrdiff_t difference_type;
-		typedef xml_attribute value_type;
-		typedef xml_attribute* pointer;
-		typedef xml_attribute& reference;
-
-	#ifndef PUGIXML_NO_STL
-		typedef std::bidirectional_iterator_tag iterator_category;
-	#endif
-
-		// Default constructor
-		xml_attribute_iterator();
-
-		// Construct an iterator which points to the specified attribute
-		xml_attribute_iterator(const xml_attribute& attr, const xml_node& parent);
-
-		// Iterator operators
-		bool operator==(const xml_attribute_iterator& rhs) const;
-		bool operator!=(const xml_attribute_iterator& rhs) const;
-
-		xml_attribute& operator*() const;
-		xml_attribute* operator->() const;
-
-		const xml_attribute_iterator& operator++();
-		xml_attribute_iterator operator++(int);
-
-		const xml_attribute_iterator& operator--();
-		xml_attribute_iterator operator--(int);
-	};
-
-	// Named node range helper
-	class PUGIXML_CLASS xml_named_node_iterator
-	{
-		friend class xml_node;
-
-	public:
-		// Iterator traits
-		typedef ptrdiff_t difference_type;
-		typedef xml_node value_type;
-		typedef xml_node* pointer;
-		typedef xml_node& reference;
-
-	#ifndef PUGIXML_NO_STL
-		typedef std::bidirectional_iterator_tag iterator_category;
-	#endif
-
-		// Default constructor
-		xml_named_node_iterator();
-
-		// Construct an iterator which points to the specified node
-		xml_named_node_iterator(const xml_node& node, const char_t* name);
-
-		// Iterator operators
-		bool operator==(const xml_named_node_iterator& rhs) const;
-		bool operator!=(const xml_named_node_iterator& rhs) const;
-
-		xml_node& operator*() const;
-		xml_node* operator->() const;
-
-		const xml_named_node_iterator& operator++();
-		xml_named_node_iterator operator++(int);
-
-		const xml_named_node_iterator& operator--();
-		xml_named_node_iterator operator--(int);
-
-	private:
-		mutable xml_node _wrap;
-		xml_node _parent;
-		const char_t* _name;
-
-		xml_named_node_iterator(xml_node_struct* ref, xml_node_struct* parent, const char_t* name);
-	};
 
 	// Abstract tree walker class (see xml_node::traverse)
 	class PUGIXML_CLASS xml_tree_walker
@@ -1397,26 +1473,6 @@ namespace pugi
 	allocation_function PUGIXML_FUNCTION get_memory_allocation_function();
 	deallocation_function PUGIXML_FUNCTION get_memory_deallocation_function();
 }
-
-#if !defined(PUGIXML_NO_STL) && (defined(_MSC_VER) || defined(__ICC))
-namespace std
-{
-	// Workarounds for (non-standard) iterator category detection for older versions (MSVC7/IC8 and earlier)
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_node_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_attribute_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION _Iter_cat(const pugi::xml_named_node_iterator&);
-}
-#endif
-
-#if !defined(PUGIXML_NO_STL) && defined(__SUNPRO_CC)
-namespace std
-{
-	// Workarounds for (non-standard) iterator category detection
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_node_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_attribute_iterator&);
-	std::bidirectional_iterator_tag PUGIXML_FUNCTION __iterator_category(const pugi::xml_named_node_iterator&);
-}
-#endif
 
 #endif
 
